@@ -3,6 +3,7 @@
 #include <boost/regex.hpp>
 #include <regex>
 #include <functional>
+#include <type_traits>
 
 using namespace std;
 
@@ -20,10 +21,16 @@ struct BaseTypeHelper
 {
     using object_type = T;
     std::string numpyType();
-    object_type fileToObject(const vector<size_t> &shape, callback_type callback) {
+    object_type toObject(const vector<size_t> &shape, callback_type callback) {
         (void)(shape);
         (void)(callback);
         throw std::runtime_error("Conversion to this type is not supported");
+    }
+    bool isSame() {
+        return std::is_same<T, U>::value;
+    }
+    bool isLossyConvertible() {
+        return std::is_convertible<U, T>::value;
     }
 };
 
@@ -55,17 +62,23 @@ template<typename eT, typename npyT>
 struct TypeHelper<std::vector<eT>, npyT> : public BaseTypeHelper<std::vector<eT>, npyT>
 {
     using object_type = std::vector<eT>;
-    object_type fileToObject(const vector<size_t> &shape, callback_type callback) {
+    object_type toObject(const vector<size_t> &shape, callback_type callback) {
         if(std::is_same<eT, npyT>::value) {
             object_type object(elementCount(shape));
             callback(reinterpret_cast<char*>(&object[0]), elementCount(shape) * sizeof(eT));
             return object;
         } else {
-            std::vector<npyT> sourceObject = TypeHelper<std::vector<npyT>, npyT>().fileToObject(shape, callback);
+            std::vector<npyT> sourceObject = TypeHelper<std::vector<npyT>, npyT>().toObject(shape, callback);
             object_type targetObject(elementCount(shape));
             copy(sourceObject.begin(), sourceObject.end(), targetObject.begin());
             return targetObject;
         }
+    }
+    bool isSame() {
+        return std::is_same<eT, npyT>::value;
+    }
+    bool isLossyConvertible() {
+        return std::is_convertible<eT, npyT>::value;
     }
 
     object_type m_temporary;
@@ -78,7 +91,12 @@ template<typename eT, typename npyT>
 struct TypeHelper<arma::Mat<eT>, npyT> : public BaseTypeHelper<arma::Mat<eT>, npyT>
 {
     using object_type = arma::Mat<eT>;
-    object_type fileToObject(const vector<size_t> &shape, callback_type callback) {
+    object_type toObject(const vector<size_t> &shape, callback_type callback) {
+        if(shape.size() != 2) {
+            stringstream error;
+            error << "Cannot convert object with " << shape.size() << " dimensions to arma::Mat.";
+            throw std::runtime_error(error.str());
+        }
         if(std::is_same<eT, npyT>::value) {
             object_type object(shape[0], shape[1]);
             object = object.t();
@@ -86,8 +104,49 @@ struct TypeHelper<arma::Mat<eT>, npyT> : public BaseTypeHelper<arma::Mat<eT>, np
             object = object.t();
             return object;
         } else {
-            return arma::conv_to<arma::Mat<eT>>::from(TypeHelper<arma::Mat<npyT>, npyT>().fileToObject(shape, callback));
+            return arma::conv_to<arma::Mat<eT>>::from(TypeHelper<arma::Mat<npyT>, npyT>().toObject(shape, callback));
         }
+    }
+    bool isSame() {
+        return std::is_same<eT, npyT>::value;
+    }
+    bool isLossyConvertible() {
+        return std::is_convertible<eT, npyT>::value;
+    }
+
+    object_type m_temporary;
+};
+
+template<typename eT> struct TypeHelper<arma::Cube<eT>, bool> : public BaseTypeHelper<arma::Cube<eT>, bool> {};
+template<typename eT> struct TypeHelper<arma::Cube<eT>, int8_t> : public BaseTypeHelper<arma::Cube<eT>, int8_t> {};
+
+template<typename eT, typename npyT>
+struct TypeHelper<arma::Cube<eT>, npyT> : public BaseTypeHelper<arma::Cube<eT>, npyT>
+{
+    using object_type = arma::Cube<eT>;
+    object_type toObject(const vector<size_t> &shape, callback_type callback) {
+        if(shape.size() != 3) {
+            stringstream error;
+            error << "Cannot convert object with " << shape.size() << " dimensions to arma::Mat.";
+            throw std::runtime_error(error.str());
+        }
+        if(std::is_same<eT, npyT>::value) {
+            object_type rotated(shape[2], shape[1], shape[0]);
+            callback(reinterpret_cast<char*>(&rotated[0]), sizeof(eT) * elementCount(shape));
+            object_type object = arma::Cube<eT>(rotated.n_cols, rotated.n_rows, rotated.n_slices); // swap n_rows and n_cols
+            for(int i = 0; i < int(object.n_slices); i++) {
+                object.slice(i) = rotated.slice(i).t();
+            }
+            return object;
+        } else {
+            return arma::conv_to<arma::Cube<eT>>::from(TypeHelper<arma::Cube<npyT>, npyT>().toObject(shape, callback));
+        }
+    }
+    bool isSame() {
+        return std::is_same<eT, npyT>::value;
+    }
+    bool isLossyConvertible() {
+        return std::is_convertible<eT, npyT>::value;
     }
 
     object_type m_temporary;
@@ -98,11 +157,11 @@ class Array
 {
 public:
     enum class Conversion {
-        Relaxed,
-        Strict
+        AllowLossy,
+        RequireSame
     };
 
-    Array(string filename, Conversion conversionMode = Conversion::Relaxed)
+    Array(string filename, Conversion conversionMode = Conversion::AllowLossy)
         : m_conversionMode(conversionMode)
     {
         file.open(filename);
@@ -153,6 +212,9 @@ public:
                 if(regex_search(value, descrMatch, regex("'(<|>|\\|)(.*?)'"))) {
                     string endian = descrMatch[1];
                     m_numpyType = descrMatch[2];
+                    stringstream fullType;
+                    fullType << endian << m_numpyType;
+                    m_fullNumpyType = fullType.str();
                     if(endian == ">") {
                         throw runtime_error("Big endian not supported");
                     }
@@ -189,22 +251,47 @@ public:
     template<typename T, typename U>
     T valueFromTypeHelper();
 
+    friend std::ostream& operator<<(std::ostream &out, const Array &array);
+
 private:
+    string m_fullNumpyType;
     string m_numpyType;
     vector<size_t> m_shape;
     vector<char> m_data;
     size_t m_byteCount = 0;
     ifstream file;
     bool m_fortranOrder = false;
-    Conversion m_conversionMode = Conversion::Relaxed;
+    Conversion m_conversionMode = Conversion::AllowLossy;
 
 };
+
+std::ostream &operator<<(std::ostream& out, const Array& array) {
+    out << "Numpy array (dtype: '" << array.m_fullNumpyType << "', "
+        << "fortranOrder: " << array.m_fortranOrder << ", "
+        << "shape: (";
+    for(size_t dim : array.m_shape) {
+        out << dim << ", ";
+    }
+    out << "))";
+    return out;
+}
 
 template<typename T, typename U>
 T Array::valueFromTypeHelper()
 {
     TypeHelper<T, U> typeHelper;
-    return typeHelper.fileToObject(m_shape, [&](char* buffer, size_t byteCount) {
+    if(m_conversionMode == Conversion::RequireSame && !typeHelper.isSame()) {
+        stringstream error;
+        error << "Cannot convert from numpy type '" << m_numpyType << "'. "
+              << "The current conversion policy requires equal types.";
+        throw std::runtime_error(error.str());
+    } else if(!typeHelper.isLossyConvertible()) {
+        stringstream error;
+        error << "Cannot convert from numpy type '" << m_numpyType << "'. "
+              << "The current conversion policy would allow it, but there is no known conversion available.";
+        throw std::runtime_error(error.str());
+    }
+    return typeHelper.toObject(m_shape, [&](char* buffer, size_t byteCount) {
         file.read(buffer, byteCount);
     });
 }
@@ -212,33 +299,6 @@ T Array::valueFromTypeHelper()
 template<typename T>
 T Array::value()
 {
-    //    if(m_numpyType != typeHelper.numpyType()) {
-    //        if(m_conversionMode == Conversion::Strict) {
-    //            stringstream error;
-    //            error << "Cannot convert from numpy type '" << m_numpyType << "' "
-    //                  << "because your type expects '" << typeHelper.numpyType() << "'. ";
-    //            if(typeHelper.canConvert(m_numpyType)) {
-    //                error << "A conversion can be enabled automatically by changing the policy to ";
-    //                error << "Array::Conversion::Relaxed. ";
-    //            } else {
-    //                error << "There is no known conversion between the two. ";
-    //            }
-    //            error << "The current conversion policy is Array::Conversion::Strict.";
-    //            throw std::runtime_error(error.str());
-    //        }
-    //        if(!typeHelper.canConvert(m_numpyType)) {
-    //            stringstream error;
-    //            error << "Cannot convert from numpy type '" << m_numpyType << "' "
-    //                  << "because your type expects '" << typeHelper.numpyType() << "' "
-    //                  << "and no known conversion exists. "
-    //                  << "The current conversion policy is Array::Conversion::Relaxed.";
-    //            throw std::runtime_error(error.str());
-    //        } else {
-    //            TypeHelper<T, float> typeHelper2;
-    //            cout << typeHelper2.numpyType() << endl;
-    //        }
-    //    }
-
     if(false) {}
     else if(m_numpyType == "b1") { return valueFromTypeHelper<T, bool>(); }
     else if(m_numpyType == "f4") { return valueFromTypeHelper<T, float>(); }
@@ -264,7 +324,7 @@ Array::operator T()
     return value<T>();
 }
 
-Array load(string filename, Array::Conversion conversionMode = Array::Conversion::Relaxed) {
+Array load(string filename, Array::Conversion conversionMode = Array::Conversion::AllowLossy) {
     return Array(filename, conversionMode);
 }
 
@@ -277,11 +337,12 @@ using namespace elegant;
 
 int main()
 {
-    vector<float> ma = npy::load("/home/svenni/Dropbox/tmp/test3.npy");
-    for(float a : ma) {
-        cout << a << " ";
-    }
-    cout << endl;
+    Cube<double> ma = npy::load("/home/svenni/Dropbox/tmp/test3.npy");
+    cout << ma << endl;
+//    for(float a : ma) {
+//        cout << a << " ";
+//    }
+//    cout << endl;
     //    cout << ma << endl;
     return 0;
 }
