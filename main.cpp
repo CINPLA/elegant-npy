@@ -9,36 +9,39 @@ using namespace std;
 namespace elegant {
 namespace npy {
 
-template<typename T>
+using callback_type = std::function<void(char*, size_t)>;
+
+size_t elementCount(const vector<size_t> &shape) {
+    return std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<size_t>());
+}
+
+template<typename T, typename U>
 struct BaseTypeHelper
 {
     using object_type = T;
     std::string numpyType();
-    size_t bufferSize(const vector<size_t> &shape) {
-        (void)shape;
-        return sizeof(object_type);
-    }
-    T objectFromShape(const vector<size_t> &extents);
-    //    char* fileToObjectBuffer(T &object);
-    object_type fileToObject(const vector<size_t> &shape, const std::string& targetType,
-                              std::function<void(char*)> callback);
-    virtual bool canConvert(const std::string& targetType) {
-        (void)targetType;
-        return false;
+    object_type fileToObject(const vector<size_t> &shape, callback_type callback) {
+        (void)(shape);
+        (void)(callback);
+        throw std::runtime_error("Conversion to this type is not supported");
     }
 };
 
-template<typename T>
-struct TypeHelper : public BaseTypeHelper<T>
+template<typename T, typename U>
+struct TypeHelper : public BaseTypeHelper<T, U>
 {
 };
 
 #define ELEGANT_NPY_REGISTER_SIMPLE_TYPE(type_name, numpy_type)\
-    template<>\
-    struct TypeHelper<type_name> : public BaseTypeHelper<type_name>\
+    template<typename U>\
+    struct TypeHelper<type_name, U> : public BaseTypeHelper<type_name, U>\
 {\
     std::string numpyType() {\
     return numpy_type;\
+}\
+    size_t bufferSize(const vector<size_t> &shape) {\
+    (void)shape;\
+    return sizeof(type_name);\
 }\
 }
 
@@ -47,50 +50,49 @@ ELEGANT_NPY_REGISTER_SIMPLE_TYPE(double, "f8");
 ELEGANT_NPY_REGISTER_SIMPLE_TYPE(int32_t, "i4");
 ELEGANT_NPY_REGISTER_SIMPLE_TYPE(int64_t, "i8");
 
-template<typename eT>
-struct TypeHelper<arma::Mat<eT>> : public BaseTypeHelper<arma::Mat<eT>>
+template<typename eT> struct TypeHelper<std::vector<eT>, bool> : public BaseTypeHelper<std::vector<eT>, bool> {};
+template<typename eT, typename npyT>
+struct TypeHelper<std::vector<eT>, npyT> : public BaseTypeHelper<std::vector<eT>, npyT>
 {
-    using object_type = arma::Mat<eT>;
-    std::string numpyType() {
-        return TypeHelper<eT>().numpyType();
-    }
-    object_type fileToObject(const vector<size_t> &shape, const std::string &targetType,
-                             std::function<void(char*)> callback) {
-        if(targetType != numpyType()) {
-            if(targetType == "f4") {
-                return arma::conv_to<object_type>::from(TypeHelper<arma::Mat<float>>().fileToObject(shape, targetType, callback));
-            }
-            if(targetType == "f8") {
-                return arma::conv_to<object_type>::from(TypeHelper<arma::Mat<double>>().fileToObject(shape, targetType, callback));
-            }
-            if(targetType == "i4") {
-                return arma::conv_to<object_type>::from(TypeHelper<arma::Mat<int32_t>>().fileToObject(shape, targetType, callback));
-            }
-            if(targetType == "i8") {
-                return arma::conv_to<object_type>::from(TypeHelper<arma::Mat<int64_t>>().fileToObject(shape, targetType, callback));
-            }
-        }
-        object_type object(shape[0], shape[1]);
-        object = object.t();
-        callback(reinterpret_cast<char*>(&object[0]));
-        object = object.t();
-        return object;
-    }
-    size_t bufferSize(vector<size_t> shape) {
-        size_t product = std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<size_t>());
-        return TypeHelper<eT>().bufferSize(shape) * product;
-    }
-    bool canConvert(const string& targetType) {
-        const string &t = targetType;
-        if(t == "f4" || t == "f8" || t == "i4" || t == "i8") {
-            return true;
+    using object_type = std::vector<eT>;
+    object_type fileToObject(const vector<size_t> &shape, callback_type callback) {
+        if(std::is_same<eT, npyT>::value) {
+            object_type object(elementCount(shape));
+            callback(reinterpret_cast<char*>(&object[0]), elementCount(shape) * sizeof(eT));
+            return object;
         } else {
-            return false;
+            std::vector<npyT> sourceObject = TypeHelper<std::vector<npyT>, npyT>().fileToObject(shape, callback);
+            object_type targetObject(elementCount(shape));
+            copy(sourceObject.begin(), sourceObject.end(), targetObject.begin());
+            return targetObject;
         }
     }
 
     object_type m_temporary;
 };
+
+template<typename eT> struct TypeHelper<arma::Mat<eT>, bool> : public BaseTypeHelper<arma::Mat<eT>, bool> {};
+template<typename eT> struct TypeHelper<arma::Mat<eT>, int8_t> : public BaseTypeHelper<arma::Mat<eT>, int8_t> {};
+
+template<typename eT, typename npyT>
+struct TypeHelper<arma::Mat<eT>, npyT> : public BaseTypeHelper<arma::Mat<eT>, npyT>
+{
+    using object_type = arma::Mat<eT>;
+    object_type fileToObject(const vector<size_t> &shape, callback_type callback) {
+        if(std::is_same<eT, npyT>::value) {
+            object_type object(shape[0], shape[1]);
+            object = object.t();
+            callback(reinterpret_cast<char*>(&object[0]), sizeof(eT) * elementCount(shape));
+            object = object.t();
+            return object;
+        } else {
+            return arma::conv_to<arma::Mat<eT>>::from(TypeHelper<arma::Mat<npyT>, npyT>().fileToObject(shape, callback));
+        }
+    }
+
+    object_type m_temporary;
+};
+
 
 class Array
 {
@@ -148,7 +150,7 @@ public:
             string value = keyPairMatch[3];
             if(key == "descr") {
                 smatch descrMatch;
-                if(regex_search(value, descrMatch, regex("'(<|>)(.*?)'"))) {
+                if(regex_search(value, descrMatch, regex("'(<|>|\\|)(.*?)'"))) {
                     string endian = descrMatch[1];
                     m_numpyType = descrMatch[2];
                     if(endian == ">") {
@@ -184,6 +186,9 @@ public:
     template<typename T>
     T value();
 
+    template<typename T, typename U>
+    T valueFromTypeHelper();
+
 private:
     string m_numpyType;
     vector<size_t> m_shape;
@@ -195,38 +200,62 @@ private:
 
 };
 
+template<typename T, typename U>
+T Array::valueFromTypeHelper()
+{
+    TypeHelper<T, U> typeHelper;
+    return typeHelper.fileToObject(m_shape, [&](char* buffer, size_t byteCount) {
+        file.read(buffer, byteCount);
+    });
+}
+
 template<typename T>
 T Array::value()
 {
-    TypeHelper<T> typeHelper;
-    if(m_numpyType != typeHelper.numpyType()) {
-        if(m_conversionMode == Conversion::Strict) {
-            stringstream error;
-            error << "Cannot convert from numpy type '" << m_numpyType << "' "
-                  << "because your type expects '" << typeHelper.numpyType() << "'. ";
-            if(typeHelper.canConvert(m_numpyType)) {
-                error << "A conversion can be enabled automatically by changing the policy to ";
-                error << "Array::Conversion::Relaxed. ";
-            } else {
-                error << "There is no known conversion between the two. ";
-            }
-            error << "The current conversion policy is Array::Conversion::Strict.";
-            throw std::runtime_error(error.str());
-        }
-        if(!typeHelper.canConvert(m_numpyType)) {
-            stringstream error;
-            error << "Cannot convert from numpy type '" << m_numpyType << "' "
-                  << "because your type expects '" << typeHelper.numpyType() << "' "
-                  << "and no known conversion exists. "
-                  << "The current conversion policy is Array::Conversion::Relaxed.";
-            throw std::runtime_error(error.str());
-        }
-    }
+    //    if(m_numpyType != typeHelper.numpyType()) {
+    //        if(m_conversionMode == Conversion::Strict) {
+    //            stringstream error;
+    //            error << "Cannot convert from numpy type '" << m_numpyType << "' "
+    //                  << "because your type expects '" << typeHelper.numpyType() << "'. ";
+    //            if(typeHelper.canConvert(m_numpyType)) {
+    //                error << "A conversion can be enabled automatically by changing the policy to ";
+    //                error << "Array::Conversion::Relaxed. ";
+    //            } else {
+    //                error << "There is no known conversion between the two. ";
+    //            }
+    //            error << "The current conversion policy is Array::Conversion::Strict.";
+    //            throw std::runtime_error(error.str());
+    //        }
+    //        if(!typeHelper.canConvert(m_numpyType)) {
+    //            stringstream error;
+    //            error << "Cannot convert from numpy type '" << m_numpyType << "' "
+    //                  << "because your type expects '" << typeHelper.numpyType() << "' "
+    //                  << "and no known conversion exists. "
+    //                  << "The current conversion policy is Array::Conversion::Relaxed.";
+    //            throw std::runtime_error(error.str());
+    //        } else {
+    //            TypeHelper<T, float> typeHelper2;
+    //            cout << typeHelper2.numpyType() << endl;
+    //        }
+    //    }
 
-    m_byteCount = typeHelper.bufferSize(m_shape);
-    return typeHelper.fileToObject(m_shape, m_numpyType, [&](char* buffer) {
-                                file.read(buffer, m_byteCount);
-                            });
+    if(false) {}
+    else if(m_numpyType == "b1") { return valueFromTypeHelper<T, bool>(); }
+    else if(m_numpyType == "f4") { return valueFromTypeHelper<T, float>(); }
+    else if(m_numpyType == "f8") { return valueFromTypeHelper<T, double>(); }
+    else if(m_numpyType == "i1") { return valueFromTypeHelper<T, int8_t>(); }
+    else if(m_numpyType == "i2") { return valueFromTypeHelper<T, int16_t>(); }
+    else if(m_numpyType == "i4") { return valueFromTypeHelper<T, int32_t>(); }
+    else if(m_numpyType == "i8") { return valueFromTypeHelper<T, int64_t>(); }
+    else if(m_numpyType == "u1") { return valueFromTypeHelper<T, uint8_t>(); }
+    else if(m_numpyType == "u2") { return valueFromTypeHelper<T, uint16_t>(); }
+    else if(m_numpyType == "u4") { return valueFromTypeHelper<T, uint32_t>(); }
+    else if(m_numpyType == "u8") { return valueFromTypeHelper<T, uint64_t>(); }
+    else {
+        stringstream error;
+        error << "Unknown npy type: " << m_numpyType << endl;
+        throw std::runtime_error(error.str());
+    }
 }
 
 template<typename T>
@@ -248,8 +277,12 @@ using namespace elegant;
 
 int main()
 {
-    mat ma = npy::load("/home/svenni/tmp/test3.npy");
-    cout << ma << endl;
+    vector<float> ma = npy::load("/home/svenni/Dropbox/tmp/test3.npy");
+    for(float a : ma) {
+        cout << a << " ";
+    }
+    cout << endl;
+    //    cout << ma << endl;
     return 0;
 }
 
