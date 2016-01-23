@@ -5,12 +5,15 @@
 #include <functional>
 #include <type_traits>
 
+const std::string magicPrefix = "\x93NUMPY";
+
 using namespace std;
 
 namespace elegant {
 namespace npy {
 
-using callback_type = std::function<void(char*, size_t)>;
+using to_object_callback = std::function<void(char*, size_t)>;
+using to_file_callback = std::function<void(const char*, std::vector<size_t>)>;
 
 size_t elementCount(const vector<size_t> &shape) {
     return std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<size_t>());
@@ -20,8 +23,14 @@ template<typename T, typename U>
 struct BaseTypeHelper
 {
     using object_type = T;
+    using element_type = T;
     std::string numpyType();
-    object_type toObject(const vector<size_t> &shape, callback_type callback) {
+    object_type toObject(const vector<size_t> &shape, to_object_callback callback) {
+        (void)(shape);
+        (void)(callback);
+        throw std::runtime_error("Conversion to this type is not supported");
+    }
+    void toFile(const object_type& object, to_file_callback callback) {
         (void)(shape);
         (void)(callback);
         throw std::runtime_error("Conversion to this type is not supported");
@@ -31,6 +40,10 @@ struct BaseTypeHelper
     }
     bool isLossyConvertible() {
         return std::is_convertible<U, T>::value;
+    }
+    vector<size_t> shape(const T& object) {
+        (void)object;
+        throw std::runtime_error("Saving this type is not supported");
     }
 };
 
@@ -43,6 +56,7 @@ struct TypeHelper : public BaseTypeHelper<T, U>
     template<typename U>\
     struct TypeHelper<type_name, U> : public BaseTypeHelper<type_name, U>\
 {\
+    using element_type = type_name;\
     std::string numpyType() {\
     return numpy_type;\
 }\
@@ -62,7 +76,8 @@ template<typename eT, typename npyT>
 struct TypeHelper<std::vector<eT>, npyT> : public BaseTypeHelper<std::vector<eT>, npyT>
 {
     using object_type = std::vector<eT>;
-    object_type toObject(const vector<size_t> &shape, callback_type callback) {
+    using element_type = eT;
+    object_type toObject(const vector<size_t> &shape, to_object_callback callback) {
         if(std::is_same<eT, npyT>::value) {
             object_type object(elementCount(shape));
             callback(reinterpret_cast<char*>(&object[0]), elementCount(shape) * sizeof(eT));
@@ -91,7 +106,8 @@ template<typename eT, typename npyT>
 struct TypeHelper<arma::Mat<eT>, npyT> : public BaseTypeHelper<arma::Mat<eT>, npyT>
 {
     using object_type = arma::Mat<eT>;
-    object_type toObject(const vector<size_t> &shape, callback_type callback) {
+    using element_type = eT;
+    object_type toObject(const vector<size_t> &shape, to_object_callback callback) {
         if(shape.size() != 2) {
             stringstream error;
             error << "Cannot convert object with " << shape.size() << " dimensions to arma::Mat.";
@@ -113,6 +129,9 @@ struct TypeHelper<arma::Mat<eT>, npyT> : public BaseTypeHelper<arma::Mat<eT>, np
     bool isLossyConvertible() {
         return std::is_convertible<eT, npyT>::value;
     }
+    vector<size_t> shape(const object_type& object) {
+        return {object.n_rows, object.n_cols};
+    }
 
     object_type m_temporary;
 };
@@ -124,7 +143,8 @@ template<typename eT, typename npyT>
 struct TypeHelper<arma::Cube<eT>, npyT> : public BaseTypeHelper<arma::Cube<eT>, npyT>
 {
     using object_type = arma::Cube<eT>;
-    object_type toObject(const vector<size_t> &shape, callback_type callback) {
+    using element_type = eT;
+    object_type toObject(const vector<size_t> &shape, to_object_callback callback) {
         if(shape.size() != 3) {
             stringstream error;
             error << "Cannot convert object with " << shape.size() << " dimensions to arma::Mat.";
@@ -141,6 +161,9 @@ struct TypeHelper<arma::Cube<eT>, npyT> : public BaseTypeHelper<arma::Cube<eT>, 
         } else {
             return arma::conv_to<arma::Cube<eT>>::from(TypeHelper<arma::Cube<npyT>, npyT>().toObject(shape, callback));
         }
+    }
+    void toFile(const object_type& object, to_file_callback callback) {
+        callback(reinterpret_cast<const char*>(&object[0]), {object.n_slices, object.n_rows, object.n_cols});
     }
     bool isSame() {
         return std::is_same<eT, npyT>::value;
@@ -166,7 +189,6 @@ public:
     {
         file.open(filename);
 
-        string magicPrefix = "\x93NUMPY";
         int magicPrefixLength = magicPrefix.size();
 
         vector<char> magicBuffer(magicPrefixLength);
@@ -328,6 +350,60 @@ Array load(string filename, Array::Conversion conversionMode = Array::Conversion
     return Array(filename, conversionMode);
 }
 
+template<typename T>
+bool save(string filename, const T &object) {
+    const std::type_info& typeInfo = typeid(typename TypeHelper<T, void>::element_type);
+
+    TypeHelper<T, void> typeHelper;
+    typeHelper.toFile(object, [&](const char *data, const vector<size_t> &shape) {
+        size_t elementSize = sizeof(typename TypeHelper<T, void>::element_type);
+        stringstream header;
+        header << "{'descr': '<";
+        if(false) {}
+        else if(typeInfo == typeid(bool)) { header << "b"; }
+        else if(typeInfo == typeid(int8_t)) { header << "i"; }
+        else if(typeInfo == typeid(int16_t)) { header << "i"; }
+        else if(typeInfo == typeid(int32_t)) { header << "i"; }
+        else if(typeInfo == typeid(int64_t)) { header << "i"; }
+        else if(typeInfo == typeid(uint8_t)) { header << "u"; }
+        else if(typeInfo == typeid(uint16_t)) { header << "u"; }
+        else if(typeInfo == typeid(uint32_t)) { header << "u"; }
+        else if(typeInfo == typeid(uint64_t)) { header << "u"; }
+        else if(typeInfo == typeid(float)) { header << "f"; }
+        else if(typeInfo == typeid(double)) { header << "f"; }
+        else if(typeInfo == typeid(long double)) { header << "f"; }
+        else {
+            throw std::runtime_error("Type is not supported");
+        }
+        header << elementSize;
+        header << "', 'fortran_order': False, 'shape': (";
+        bool first = true;
+        for(size_t dim : shape) {
+            if(!first) {
+                header << ",";
+            }
+            header << dim;
+            first = false;
+        }
+        header << "), }";
+        // TODO add padding
+
+        ofstream file(filename);
+        file << magicPrefix;
+        int majorVersion = 1;
+        int minorVersion = 0;
+        file.write(reinterpret_cast<char*>(&majorVersion), 1);
+        file.write(reinterpret_cast<char*>(&minorVersion), 1);
+        uint16_t headerSize = header.str().size();
+        file.write(reinterpret_cast<char*>(&headerSize), 2);
+        file << header.str();
+
+        file.write(data, elementCount(shape) * elementSize);
+    });
+
+    return true;
+}
+
 }
 }
 
@@ -339,10 +415,11 @@ int main()
 {
     Cube<double> ma = npy::load("/home/svenni/Dropbox/tmp/test3.npy");
     cout << ma << endl;
-//    for(float a : ma) {
-//        cout << a << " ";
-//    }
-//    cout << endl;
+    npy::save("/home/svenni/Dropbox/tmp/test4.npy", ma);
+    //    for(float a : ma) {
+    //        cout << a << " ";
+    //    }
+    //    cout << endl;
     //    cout << ma << endl;
     return 0;
 }
