@@ -18,7 +18,8 @@ Reader::Reader(string filename, Reader::Conversion conversionMode)
     m_file.read(&magicBuffer[0], magicBuffer.size());
     string resultingString(magicBuffer.begin(), magicBuffer.end());
     if(resultingString != magicPrefix) {
-        throw std::runtime_error("The magic string is not correct");
+        cout << "Magic string: " << resultingString << endl;
+        throw runtime_error("The magic string is not correct");
     }
     uint8_t majorVersion = 0;
     uint8_t minorVersion = 0;
@@ -39,6 +40,7 @@ Reader::Reader(string filename, Reader::Conversion conversionMode)
     vector<char> headerBuffer(headerLength);
     m_file.read(&headerBuffer[0], headerLength);
     string header(headerBuffer.begin(), headerBuffer.end());
+    cout << "Header: " << header << endl;
 
     // {'descr': '<i8', 'fortran_order': True, 'shape': (8,), }
 
@@ -52,12 +54,22 @@ Reader::Reader(string filename, Reader::Conversion conversionMode)
         string value = keyPairMatch[3];
         if(key == "descr") {
             smatch descrMatch;
-            if(regex_search(value, descrMatch, regex("'(<|>|\\|)(.*?)'"))) {
+            if(regex_search(value, descrMatch, regex("'(<|>|\\|)([a-zA-Z]+)([0-9]+)'"))) {
                 string endian = descrMatch[1];
-                m_numpyType = descrMatch[2];
-                stringstream fullType;
-                fullType << endian << m_numpyType;
-                m_fullNumpyType = fullType.str();
+                string typeString = descrMatch[2];
+                if(typeString == "f") {
+                    m_numpyType = NumpyType::Float;
+                } else if(typeString == "i") {
+                    m_numpyType = NumpyType::Integer;
+                } else if(typeString == "b") {
+                    m_numpyType = NumpyType::Byte;
+                } else if(typeString == "u") {
+                    m_numpyType = NumpyType::UnsignedInteger;
+                } else {
+                    cerr << "Type: " << typeString << endl;
+                    throw std::runtime_error("Type not implemented");
+                }
+                m_byteCount = stoi(descrMatch[3]);
                 if(endian == ">") {
                     throw runtime_error("Big endian not supported");
                 }
@@ -76,9 +88,11 @@ Reader::Reader(string filename, Reader::Conversion conversionMode)
             string::const_iterator shapeEnd = value.end();
             while(regex_search(shapeStart, shapeEnd, shapeMatch, regex("([0-9]+?)(?:\\s*(?:,|\\)))"))) {
                 string shapeValue = shapeMatch[1];
+                cout << "shape value: " << shapeValue << endl;
                 m_shape.push_back(stoi(shapeValue));
                 shapeStart = shapeMatch[0].second;
             }
+            cout << "shape size: " << m_shape.size();
         }
         start = keyPairMatch[0].second; // move on to the next match
     }
@@ -89,8 +103,18 @@ bool Reader::isFortranOrder() const
     return m_isFortranOrder;
 }
 
+std::vector<size_t> Reader::shape() const
+{
+    return m_shape;
+}
+
+NumpyType Reader::numpyType() const
+{
+    return m_numpyType;
+}
+
 std::ostream &operator<<(std::ostream &out, const Reader &array) {
-    out << "Numpy array (dtype: '" << array.m_fullNumpyType << "', "
+    out << "Numpy array (dtype: '[TODO]', "
         << "fortranOrder: " << array.m_isFortranOrder << ", "
         << "shape: (";
     for(size_t dim : array.m_shape) {

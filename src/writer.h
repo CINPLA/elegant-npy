@@ -1,5 +1,5 @@
-#ifndef WRITER_H
-#define WRITER_H
+#ifndef ELEGANT_NPY_WRITER_H
+#define ELEGANT_NPY_WRITER_H
 
 #include <string>
 #include <vector>
@@ -27,4 +27,4 @@ private:
 }
 }
 
-#endif // WRITER_H
+#endif // ELEGANT_NPY_WRITER_H

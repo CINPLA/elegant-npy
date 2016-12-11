@@ -1,5 +1,5 @@
-#ifndef READER_H
-#define READER_H
+#ifndef ELEGANT_NPY_READER_H
+#define ELEGANT_NPY_READER_H
 
 #include <iostream>
 #include <string>
@@ -8,6 +8,7 @@
 #include <sstream>
 
 #include "typehelper.h"
+#include "common.h"
 
 namespace elegant {
 namespace npy {
@@ -40,9 +41,14 @@ public:
         return true; // TODO check if read ok
     }
 
+    std::vector<size_t> shape() const;
+    NumpyType numpyType() const;
+
 private:
-    std::string m_fullNumpyType;
-    std::string m_numpyType;
+    std::string m_numpyPrecision;
+
+    NumpyType m_numpyType;
+
     std::vector<size_t> m_shape;
     std::vector<char> m_data;
     size_t m_byteCount = 0;
@@ -59,12 +65,12 @@ T Reader::valueFromTypeHelper()
     TypeHelper<T, U> typeHelper;
     if(!typeHelper.isLossyConvertible()) {
         std::stringstream error;
-        error << "Cannot convert from numpy type '" << m_numpyType << "'. "
+        error << "Cannot convert from numpy type. "
               << "The current conversion policy would allow it, but there is no known conversion available.";
         throw std::runtime_error(error.str());
     } else if(m_conversionMode == Conversion::RequireSame && !typeHelper.isSame()) {
         std::stringstream error;
-        error << "Cannot convert from numpy type '" << m_numpyType << "'. "
+        error << "Cannot convert from numpy type. "
               << "The current conversion policy requires equal types.";
         throw std::runtime_error(error.str());
     }
@@ -74,21 +80,32 @@ T Reader::valueFromTypeHelper()
 template<typename T>
 T Reader::value()
 {
-    if(false) {}
-    else if(m_numpyType == "b1") { return valueFromTypeHelper<T, bool>(); }
-    else if(m_numpyType == "f4") { return valueFromTypeHelper<T, float>(); }
-    else if(m_numpyType == "f8") { return valueFromTypeHelper<T, double>(); }
-    else if(m_numpyType == "i1") { return valueFromTypeHelper<T, int8_t>(); }
-    else if(m_numpyType == "i2") { return valueFromTypeHelper<T, int16_t>(); }
-    else if(m_numpyType == "i4") { return valueFromTypeHelper<T, int32_t>(); }
-    else if(m_numpyType == "i8") { return valueFromTypeHelper<T, int64_t>(); }
-    else if(m_numpyType == "u1") { return valueFromTypeHelper<T, uint8_t>(); }
-    else if(m_numpyType == "u2") { return valueFromTypeHelper<T, uint16_t>(); }
-    else if(m_numpyType == "u4") { return valueFromTypeHelper<T, uint32_t>(); }
-    else if(m_numpyType == "u8") { return valueFromTypeHelper<T, uint64_t>(); }
+    if(false) {
+    } else if(m_numpyType == NumpyType::Byte) {
+        return valueFromTypeHelper<T, bool>();
+    } else if(m_numpyType == NumpyType::Float && m_byteCount == 4) {
+        return valueFromTypeHelper<T, float>();
+    } else if(m_numpyType == NumpyType::Float && m_byteCount == 8) {
+        return valueFromTypeHelper<T, double>();
+    } else if(m_numpyType == NumpyType::Integer && m_byteCount == 1) {
+        return valueFromTypeHelper<T, int8_t>();
+    } else if(m_numpyType == NumpyType::Integer && m_byteCount == 2) {
+        return valueFromTypeHelper<T, int16_t>();
+    } else if(m_numpyType == NumpyType::Integer && m_byteCount == 4) {
+        return valueFromTypeHelper<T, int32_t>();
+    } else if(m_numpyType == NumpyType::Integer && m_byteCount == 8) {
+        return valueFromTypeHelper<T, int64_t>();
+    } else if(m_numpyType == NumpyType::UnsignedInteger && m_byteCount == 1) {
+        return valueFromTypeHelper<T, uint8_t>();
+    } else if(m_numpyType == NumpyType::UnsignedInteger && m_byteCount == 2) {
+        return valueFromTypeHelper<T, uint16_t>();
+    } else if(m_numpyType == NumpyType::UnsignedInteger && m_byteCount == 4) {
+        return valueFromTypeHelper<T, uint32_t>();
+    } else if(m_numpyType == NumpyType::UnsignedInteger && m_byteCount == 8) {
+        return valueFromTypeHelper<T, uint64_t>(); }
     else {
         std::stringstream error;
-        error << "Unknown npy type: " << m_numpyType << std::endl;
+        error << "Unknown NumPy type." << std::endl;
         throw std::runtime_error(error.str());
     }
 }
@@ -102,4 +119,4 @@ Reader::operator T()
 }
 }
 
-#endif // READER_H
+#endif // ELEGANT_NPY_READER_H

@@ -11,6 +11,14 @@ namespace npy {
 const std::string magicPrefix = "\x93NUMPY";
 size_t elementCount(const std::vector<size_t> &shape);
 
+
+enum class NumpyType {
+    Byte,
+    Float,
+    Integer,
+    UnsignedInteger
+};
+
 }
 }
 
