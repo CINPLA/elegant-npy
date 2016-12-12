@@ -1,5 +1,7 @@
 CONFIG += c++14
 
+LIBS += -lboost_regex
+
 SOURCES += \
     $$PWD/writer.cpp \
     $$PWD/reader.cpp \

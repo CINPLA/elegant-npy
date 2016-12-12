@@ -46,11 +46,17 @@ struct TypeHelper<arma::Mat<eT>, npyT> : public BaseTypeHelper<arma::Mat<eT>, np
 {
     using ObjectType = arma::Mat<eT>;
     using ElementType = eT;
-    ObjectType fromFile(const std::vector<size_t> &shape, Reader &reader) {
-        if(shape.size() != 2) {
+    ObjectType fromFile(const std::vector<size_t> &sourceShape, Reader &reader) {
+        auto shape = std::vector<size_t>({1, 1, 1});
+        if(sourceShape.size() > 2) {
             std::stringstream error;
-            error << "Cannot convert object with " << shape.size() << " dimensions to arma::Mat.";
+            error << "Cannot convert object with " << sourceShape.size() << " dimensions to arma::Mat.";
             throw std::runtime_error(error.str());
+        } else if(sourceShape.size() == 1) {
+            // TODO verify that this is correct and should not be {N, 1}
+            shape = {1, sourceShape[0]};
+        } else {
+            shape = sourceShape;
         }
         if(std::is_same<eT, npyT>::value) {
             int rowCount = shape[0];
@@ -94,7 +100,7 @@ struct TypeHelper<arma::Cube<eT>, npyT> : public BaseTypeHelper<arma::Cube<eT>, 
         auto shape = std::vector<size_t>({1, 1, 1});
         if(sourceShape.size() > 3) {
             std::stringstream error;
-            error << "Cannot convert object with " << shape.size() << " dimensions to arma::Cube.";
+            error << "Cannot convert object with " << sourceShape.size() << " dimensions to arma::Cube.";
             throw std::runtime_error(error.str());
         } else if(sourceShape.size() == 2) {
             shape = {1, sourceShape[0], sourceShape[1]};

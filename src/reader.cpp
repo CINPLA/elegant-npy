@@ -1,6 +1,8 @@
 #include "reader.h"
 #include "common.h"
-#include <regex>
+#include <boost/regex.hpp>
+
+using namespace boost;
 
 using namespace std;
 
@@ -40,7 +42,6 @@ Reader::Reader(string filename, Reader::Conversion conversionMode)
     vector<char> headerBuffer(headerLength);
     m_file.read(&headerBuffer[0], headerLength);
     string header(headerBuffer.begin(), headerBuffer.end());
-    cout << "Header: " << header << endl;
 
     // {'descr': '<i8', 'fortran_order': True, 'shape': (8,), }
 
@@ -88,11 +89,9 @@ Reader::Reader(string filename, Reader::Conversion conversionMode)
             string::const_iterator shapeEnd = value.end();
             while(regex_search(shapeStart, shapeEnd, shapeMatch, regex("([0-9]+?)(?:\\s*(?:,|\\)))"))) {
                 string shapeValue = shapeMatch[1];
-                cout << "shape value: " << shapeValue << endl;
                 m_shape.push_back(stoi(shapeValue));
                 shapeStart = shapeMatch[0].second;
             }
-            cout << "shape size: " << m_shape.size();
         }
         start = keyPairMatch[0].second; // move on to the next match
     }
@@ -101,6 +100,11 @@ Reader::Reader(string filename, Reader::Conversion conversionMode)
 bool Reader::isFortranOrder() const
 {
     return m_isFortranOrder;
+}
+
+bool Reader::read(char *buffer, size_t byteCount) {
+    m_file.read(buffer, byteCount);
+    return true; // TODO check if read ok
 }
 
 std::vector<size_t> Reader::shape() const

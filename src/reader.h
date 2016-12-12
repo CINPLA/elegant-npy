@@ -36,10 +36,7 @@ public:
 
     bool isFortranOrder() const;
 
-    bool read(char* buffer, size_t byteCount) {
-        m_file.read(buffer, byteCount);
-        return true; // TODO check if read ok
-    }
+    bool read(char* buffer, size_t byteCount);
 
     std::vector<size_t> shape() const;
     NumpyType numpyType() const;
