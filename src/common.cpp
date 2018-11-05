@@ -1,5 +1,7 @@
 #include "common.h"
 
+#include <numeric>
+
 namespace elegant {
 namespace npy {
 
